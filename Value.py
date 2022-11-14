@@ -7,15 +7,31 @@ class Value:
         self.data = data
         self.grad = 0.0
         self._backward = lambda: None
+        # to remember the leaf variables and connect nodes while back propagating
         self._prev = set(_children)
         self._op = _op
         self.label = label
 
     def __repr__(self):
+        # show the value fo the data rather showing the pointers
         return f"Value(data={self.data})"
 
+    # python + for "Value" objects wil be replaced by __add__ , so actually a + b -> a.__add__(b) {python
+    # interpretation.} same applies for other operators
+
+    # _backward function defines the derivative ( gradient - local
+    # one w.r.t. the operator for backpropagation)
+
+    # if you know the gradient - change of the output given a small change of given variable --> you know how to fine
+    # tune the output by changing that variable
+
+    # if you have train data set --> Accumulate the squared error ( Yactual - Y predicted)^2 and try to minimise it
+    # using backpropagation -- NN
+
+    # step SIZE to change the variable --> learning rate
+    # direction of the change defined by gradient
     def __add__(self, other):
-        other = other if isinstance(other, Value) else Value(other)
+        other = other if isinstance(other, Value) else Value(other) # fix the issue with a + 2.0
         out = Value(self.data + other.data, (self, other), '+')
 
         def _backward():
@@ -81,7 +97,7 @@ class Value:
         out = Value(math.exp(x), (self,), 'exp')
 
         def _backward():
-            self.grad += out.data * out.grad  # NOTE: in the video I incorrectly used = instead of +=. Fixed here.
+            self.grad += out.data * out.grad
 
         out._backward = _backward
 
