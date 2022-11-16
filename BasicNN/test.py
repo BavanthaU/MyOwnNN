@@ -14,7 +14,7 @@ ys = [1.0, -1.0, -1.0, 1.0]
 n = MLP(3, [4, 4, 1])
 
 # gradient decent
-for i in range(1000):
+for i in range(1):
     ypred = [n(x) for x in xs]
     print(ypred)
 
@@ -28,7 +28,7 @@ for i in range(1000):
         p.grad = 0.0
     loss.backward()
     dot = draw_dot(loss)
-    # dot.render(directory='digraph_output', view=True)
+    dot.render(directory='digraph_output', view=True)
 
     for p in n.parameters():
         p.data += -0.01 * p.grad  # "-" is to decrease the loss where 0.01 is the learning rate
