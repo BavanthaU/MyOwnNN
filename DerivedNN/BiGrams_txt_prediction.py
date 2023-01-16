@@ -50,6 +50,8 @@ P = (N + 1).float()
 # so division
 # 27, 27
 # 27,  1 => first raw will be divided by the sum of the count in first raw => check the matching dimensions
+# dim (int or tuple of ints, optional) – the dimension or
+# dimensions to reduce. If None, all dimensions are reduced.
 P /= P.sum(1, keepdims=True)
 
 for i in range(5):
