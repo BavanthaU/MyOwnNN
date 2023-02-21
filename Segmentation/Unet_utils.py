@@ -1,4 +1,4 @@
-shape = 512
+shape = 224
 
 
 def compute_max_depth(shape, max_depth=10, print_out=True):
