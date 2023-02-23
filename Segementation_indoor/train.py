@@ -16,7 +16,8 @@ from utils import (
 
 # Hyper parameters
 LEARNING_RATE = 1e-4
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+#DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE="cpu"
 BATCH_SIZE = 16
 NUM_EPOCHS = 3
 NUM_WORKERS = 4
@@ -41,9 +42,8 @@ def train_fn(loader, model, optimiser, loss_fn, scaler):
             loss = loss_fn(predictions, targets)
 
         optimiser.zero_grad()
-        scaler.scale(loss).backward()
-        scaler.step(optimiser)
-        scaler.update()
+        loss.backward()
+        optimiser.step()
 
         # update tqdm loop
         loop.set_postfix(loss=loss.item())
@@ -96,7 +96,7 @@ def main():
     if LOAD_MODEL:
         load_checkpoint(torch.load("unet_checkpoint.pth.tar"), model)
 
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = None
 
     for epoch in range(NUM_EPOCHS):
         train_fn(train_loader, model, optimiser, loss_fn, scaler)
