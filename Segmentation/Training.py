@@ -1,120 +1,154 @@
-from collections import defaultdict
-import torch
-import torch.nn.functional as F
-import time
-import copy
-from Gen_synthetic_images import *
-from Unet import *
-import torch.optim as optim
-from torch.optim import lr_scheduler
+from torchvision import transforms
+from sklearn.model_selection import train_test_split
+import cv2 as cv2
+from torch_snippets import *
+from Unet import Unet
+from tqdm import tqdm
+import wandb
+
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+LEARNING_RATE = 1e-3
+N_EPOCHS = 20
 
 
-def dice_loss(pred, target, smooth=1.):
-    pred = pred.contiguous()
-    target = target.contiguous()
-
-    intersection = (pred * target).sum(dim=2).sum(dim=2)
-
-    loss = (1 - ((2. * intersection + smooth) / (pred.sum(dim=2).sum(dim=2) + target.sum(dim=2).sum(dim=2) + smooth)))
-
-    return loss.mean()
-
-
-def calc_loss(pred, target, metrics, bce_weight=0.5):
-    bce = F.binary_cross_entropy_with_logits(pred, target)
-
-    pred = torch.sigmoid(pred)
-    dice = dice_loss(pred, target)
-
-    loss = bce * bce_weight + dice * (1 - bce_weight)
-
-    metrics['bce'] += bce.data.cpu().numpy() * target.size(0)
-    metrics['dice'] += dice.data.cpu().numpy() * target.size(0)
-    metrics['loss'] += loss.data.cpu().numpy() * target.size(0)
-
-    return loss
+def get_transforms():
+    return transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(
+            [0.485, 0.456, 0.406],
+            [0.229, 0.224, 0.225]
+        )
+    ])
 
 
-def print_metrics(metrics, epoch_samples, phase):
-    outputs = []
-    for k in metrics.keys():
-        outputs.append("{}: {:4f}".format(k, metrics[k] / epoch_samples))
+class SegmentationData(Dataset):
+    def __init__(self, split):
+        self.items = stems(f'dataset1/images_prepped_{split}')
+        self.split = split
 
-    print("{}: {}".format(phase, ", ".join(outputs)))
+    def __len__(self):
+        return len(self.items)
 
+    def __getitem__(self, ix):
+        image = read(f'dataset1/images_prepped_{self.split}/{self.items[ix]}.png', 1)
+        image = cv2.resize(image, (224, 224))
 
-def train_model(model, optimizer, scheduler, num_epochs=25):
-    best_model_wts = copy.deepcopy(model.state_dict())
-    best_loss = 1e10
+        mask = read(f'dataset1/annotations_prepped_{self.split}/{self.items[ix]}.png')
+        mask = cv2.resize(mask, (224, 224))
 
-    for epoch in range(num_epochs):
-        print('Epoch {}/{}'.format(epoch, num_epochs - 1))
-        print('-' * 10)
+        return image, mask
 
-        since = time.time()
+    def choose(self): return self[randint(len(self))]
 
-        # Each epoch has a training and validation phase
-        for phase in ['train', 'val']:
-            if phase == 'train':
-                scheduler.step()
-                for param_group in optimizer.param_groups:
-                    print("LR", param_group['lr'])
+    def collate_fn(self, batch):
+        ims, masks = list(zip(*batch))
 
-                model.train()  # Set model to training mode
-            else:
-                model.eval()  # Set model to evaluate mode
+        ims = torch.cat([get_transforms()(im.copy() / 255.)[None] for im in ims]).float().to(DEVICE)
 
-            metrics = defaultdict(float)
-            epoch_samples = 0
+        ce_masks = torch.cat([torch.Tensor(mask[None]) for mask in masks]).long().to(DEVICE)
 
-            for inputs, labels in dataloaders[phase]:
-                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                inputs = inputs.to(device)
-                labels = labels.to(device)
-
-                # zero the parameter gradients
-                optimizer.zero_grad()
-
-                # forward
-                # track history if only in train
-                with torch.set_grad_enabled(phase == 'train'):
-                    outputs = model(inputs)
-                    loss = calc_loss(outputs, labels, metrics)
-
-                    # backward + optimize only if in training phase
-                    if phase == 'train':
-                        loss.backward()
-                        optimizer.step()
-
-                # statistics
-                epoch_samples += inputs.size(0)
-
-            print_metrics(metrics, epoch_samples, phase)
-            epoch_loss = metrics['loss'] / epoch_samples
-
-            # deep copy the model
-            if phase == 'val' and epoch_loss < best_loss:
-                print("saving best model")
-                best_loss = epoch_loss
-                best_model_wts = copy.deepcopy(model.state_dict())
-
-        time_elapsed = time.time() - since
-        print('{:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
-
-    print('Best val loss: {:4f}'.format(best_loss))
-
-    # load best model weights
-    model.load_state_dict(best_model_wts)
-    return model
+        return ims, ce_masks
 
 
-model = Unet(n_class=6)
-print(model)
+# Loading Data
+def get_dataloaders():
+    trn_ds = SegmentationData('train')
+    val_ds = SegmentationData('test')
 
-optimizer_ft = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4)
+    trn_dl = DataLoader(trn_ds, batch_size=4, shuffle=True, collate_fn=trn_ds.collate_fn)
+    val_dl = DataLoader(val_ds, batch_size=1, shuffle=True, collate_fn=val_ds.collate_fn)
 
-exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=30, gamma=0.1)
+    return trn_dl, val_dl
 
-model = train_model(model, optimizer_ft, exp_lr_scheduler, num_epochs=60)
 
-torch.save(model.state_dict(), "/Users/bavantha/PycharmProjects/MyOwnNN/Segmentation")
+trn_dl, val_dl = get_dataloaders()
+
+# Loss
+
+ce = nn.CrossEntropyLoss()
+
+
+def UnetLoss(preds, targets):
+    ce_loss = ce(preds, targets)
+    acc = (torch.max(preds, 1)[1] == targets).float().mean()
+    return ce_loss, acc
+
+
+# Training and Validation
+class engine():
+    def train_batch(model, data, optimizer, criterion):
+        model.train()
+
+        ims, ce_masks = data
+        _masks = model(ims)
+        optimizer.zero_grad()
+
+        loss, acc = criterion(_masks, ce_masks)
+        loss.backward()
+        optimizer.step()
+
+        return loss.item(), acc.item()
+
+    @torch.no_grad()
+    def validate_batch(model, data, criterion):
+        model.eval()
+
+        ims, masks = data
+        _masks = model(ims)
+
+        loss, acc = criterion(_masks, masks)
+
+        return loss.item(), acc.item()
+
+
+# Init Unet
+
+def make_model():
+    model = Unet(n_class=12).to(DEVICE)
+    criterion = UnetLoss
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    return model, criterion, optimizer
+
+
+model, criterion, optimizer = make_model()
+
+wandb.init(
+    # set the wandb project where this run will be logged
+    project="Unet-segmentation_outdoor",
+
+    # track hyperparameters and run metadata
+    config={
+        "learning_rate": LEARNING_RATE,
+        "architecture": "Unet",
+        "dataset": "Unknown_outdoor",
+        "epochs": N_EPOCHS,
+    }
+)
+
+
+def run():
+    for epoch in range(N_EPOCHS):
+        print("####################")
+        print(f"       Epoch: {epoch}   ")
+        print("####################")
+
+        for bx, data in tqdm(enumerate(trn_dl), total=len(trn_dl)):
+            train_loss, train_acc = engine.train_batch(model, data, optimizer, criterion)
+
+        for bx, data in tqdm(enumerate(val_dl), total=len(val_dl)):
+            val_loss, val_acc = engine.validate_batch(model, data, criterion)
+
+        wandb.log(
+            {
+                'epoch': epoch,
+                'train_loss': train_loss,
+                'train_acc': train_acc,
+                'val_loss': val_loss,
+                'val_acc': val_acc
+            }
+        )
+
+        print()
+
+
+run()
