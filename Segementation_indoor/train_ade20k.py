@@ -8,7 +8,7 @@ import wandb
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 LEARNING_RATE = 1e-3
-N_EPOCHS = 20
+N_EPOCHS = 2
 
 
 def get_transforms():
@@ -30,10 +30,12 @@ class SegmentationData(Dataset):
         return len(self.items)
 
     def __getitem__(self, ix):
+        # print(f'ADEChallengeData2016/images/{self.split}/{self.items[ix]}.jpg')
         image = read(f'ADEChallengeData2016/images/{self.split}/{self.items[ix]}.jpg', 1)
         image = cv2.resize(image, (224, 224))
 
-        mask = read(f'ADEChallengeData2016/annotations/{self.split}/{self.items[ix]}.png')
+        # print(f'ADEChallengeData2016/annotations/{self.split}/{self.items[ix]}.png')
+        mask = read(f'ADEChallengeData2016/annotations/{self.split}/{self.items[ix]}.png', 0)
         mask = cv2.resize(mask, (224, 224))
 
         return image, mask
@@ -104,7 +106,7 @@ class engine():
 # Init Unet
 
 def make_model():
-    model = Unet(n_class=150).to(DEVICE)
+    model = Unet(in_channels=3, out_classes=151).to(DEVICE)
     criterion = UnetLoss
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     return model, criterion, optimizer

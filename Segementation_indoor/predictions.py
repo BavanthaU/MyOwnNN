@@ -8,7 +8,7 @@ import wandb
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 LEARNING_RATE = 1e-3
-N_EPOCHS = 1
+PATH = "./model_unet_20epoch.pth"
 
 
 def get_transforms():
@@ -23,18 +23,17 @@ def get_transforms():
 
 class SegmentationData(Dataset):
     def __init__(self, split):
-        self.items = stems(f'dataset1/images_prepped_{split}')
+        self.items = stems(f'ADEChallengeData2016/images/{split}')
         self.split = split
 
     def __len__(self):
-        print(f"Number items in the data set {len(self.items)}")
         return len(self.items)
 
     def __getitem__(self, ix):
-        image = read(f'dataset1/images_prepped_{self.split}/{self.items[ix]}.png', 1)
+        image = read(f'ADEChallengeData2016/images/{self.split}/{self.items[ix]}.jpg', 1)
         image = cv2.resize(image, (224, 224))
 
-        mask = read(f'dataset1/annotations_prepped_{self.split}/{self.items[ix]}.png')
+        mask = read(f'ADEChallengeData2016/annotations/{self.split}/{self.items[ix]}.png')
         mask = cv2.resize(mask, (224, 224))
 
         return image, mask
@@ -53,10 +52,10 @@ class SegmentationData(Dataset):
 
 # Loading Data
 def get_dataloaders():
-    trn_ds = SegmentationData('train')
-    val_ds = SegmentationData('test')
+    trn_ds = SegmentationData('training')
+    val_ds = SegmentationData('validation')
 
-    trn_dl = DataLoader(trn_ds, batch_size=4, shuffle=True, collate_fn=trn_ds.collate_fn)
+    trn_dl = DataLoader(trn_ds, batch_size=16, shuffle=True, collate_fn=trn_ds.collate_fn)
     val_dl = DataLoader(val_ds, batch_size=1, shuffle=True, collate_fn=val_ds.collate_fn)
 
     return trn_dl, val_dl
@@ -105,51 +104,42 @@ class engine():
 # Init Unet
 
 def make_model():
-    model = Unet(n_class=12).to(DEVICE)
+    model = Unet(in_channels=3, out_classes=151).to(DEVICE)
     criterion = UnetLoss
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     return model, criterion, optimizer
 
 
 model, criterion, optimizer = make_model()
-
-wandb.init(
-    # set the wandb project where this run will be logged
-    project="Unet-segmentation_outdoor",
-
-    # track hyperparameters and run metadata
-    config={
-        "learning_rate": LEARNING_RATE,
-        "architecture": "Unet",
-        "dataset": "Unknown_outdoor",
-        "epochs": N_EPOCHS,
-    }
-)
+model.load_state_dict(torch.load(PATH, map_location=torch.device('cpu')))
 
 
-def run():
-    for epoch in range(N_EPOCHS):
-        print("####################")
-        print(f"       Epoch: {epoch}   ")
-        print("####################")
+def evaluate_model():
+    for bx, data in tqdm(enumerate(val_dl), total=len(val_dl)):
+        im, mask = data
+        print("Image data", im, "End of image data")
+        _mask = model(im)
+        _, _mask = torch.max(_mask, dim=1)
 
-        for bx, data in tqdm(enumerate(trn_dl), total=len(trn_dl)):
-            train_loss, train_acc = engine.train_batch(model, data, optimizer, criterion)
+        plt.figure(figsize=(10, 10))
+        plt.axis("off")
+        plt.imshow(im[0].permute(1, 2, 0).detach().cpu()[:, :, 0])
+        plt.savefig("original_image.jpg")
+        plt.close()
 
-        for bx, data in tqdm(enumerate(val_dl), total=len(val_dl)):
-            val_loss, val_acc = engine.validate_batch(model, data, criterion)
+        plt.figure(figsize=(10, 10))
+        plt.axis("off")
+        plt.imshow(mask.permute(1, 2, 0).detach().cpu()[:, :, 0])
+        plt.savefig("original_mask.jpg")
+        plt.close()
 
-        wandb.log(
-            {
-                'epoch': epoch,
-                'train_loss': train_loss,
-                'train_acc': train_acc,
-                'val_loss': val_loss,
-                'val_acc': val_acc
-            }
-        )
+        plt.figure(figsize=(10, 10))
+        plt.axis("off")
+        plt.imshow(_mask.permute(1, 2, 0).detach().cpu()[:, :, 0])
+        plt.savefig("predicted_mask.jpg")
+        plt.close()
 
-        print()
+        break
 
 
-run()
+evaluate_model()
